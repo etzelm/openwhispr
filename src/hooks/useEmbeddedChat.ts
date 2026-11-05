@@ -1,9 +1,14 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useChatPersistence } from "../components/chat/useChatPersistence";
-import { useChatStreaming, type SendToAIOptions } from "../components/chat/useChatStreaming";
+import {
+  useChatStreaming,
+  type OpenNoteContext,
+  type SendToAIOptions,
+} from "../components/chat/useChatStreaming";
 import { useChatMessageSender } from "../components/chat/useChatMessageSender";
 import type { Message, AgentState } from "../components/chat/types";
 import { deriveConversationTitle } from "../lib/conversationTitle";
+import { buildOpenNoteContext } from "../components/chat/openNoteContext";
 import { attendeesForUser } from "../utils/noteAttendees";
 import type { CalendarAttendee } from "../types/calendar";
 import type { NoteAttendeesRequest } from "../types/connectors";
@@ -81,19 +86,22 @@ export function useEmbeddedChat({
     },
   });
 
+  const transcript = noteTranscript ?? "";
   const openNote = useMemo(
     () =>
-      [
-        `Note ID: ${noteId}`,
-        folderId != null ? `Folder ID: ${folderId}` : "",
-        `Title: ${noteTitle}`,
-        `Content:\n${noteContent}`,
-        noteSummary ? `\nAI Summary:\n${noteSummary}` : "",
-        noteTranscript ? `\nTranscript:\n${noteTranscript}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    [folderId, noteContent, noteId, noteSummary, noteTitle, noteTranscript]
+      (maxTranscriptTokens: number): OpenNoteContext =>
+        buildOpenNoteContext(
+          {
+            id: noteId,
+            folderId,
+            title: noteTitle,
+            content: noteContent,
+            summary: noteSummary ?? "",
+            transcript,
+          },
+          maxTranscriptTokens
+        ),
+    [folderId, noteContent, noteId, noteSummary, noteTitle, transcript]
   );
 
   const noteMeeting = useMemo<NoteAttendeesRequest>(
@@ -137,6 +145,7 @@ export function useEmbeddedChat({
   }
 
   useEffect(() => {
+    if (noteIdRef.current !== noteId) streaming.cancelStream();
     noteIdRef.current = noteId;
     if (!noteId) return;
 
@@ -156,8 +165,9 @@ export function useEmbeddedChat({
     async (id: number) => {
       if (id === conversationId) return;
       cancelStream();
-      await persistence.loadConversation(id);
-      setConversationId(id);
+      const loaded = await persistence.loadConversation(id);
+      if (loaded === false) return;
+      setConversationId(loaded === null ? null : id);
     },
     [cancelStream, conversationId, persistence]
   );
@@ -214,14 +224,15 @@ export function useEmbeddedChat({
     if (!newChatMessage) return;
     setNewChatMessage(null);
     const { text, options } = newChatMessage;
+    const version = persistence.getSessionVersion?.();
+    const restoreDraft = () => {
+      if (version === persistence.getSessionVersion?.()) onNewChatUnsent?.(text);
+    };
     // A send that never started (lock held, conversation not created) must not eat the question.
-    sendMessageWithResult(text, options).then(
-      (sent) => {
-        if (!sent) onNewChatUnsent?.(text);
-      },
-      () => onNewChatUnsent?.(text)
-    );
-  }, [newChatMessage, onNewChatUnsent, sendMessageWithResult]);
+    sendMessageWithResult(text, options).then((sent) => {
+      if (!sent) restoreDraft();
+    }, restoreDraft);
+  }, [newChatMessage, onNewChatUnsent, persistence, sendMessageWithResult]);
 
   return {
     messages: persistence.messages,

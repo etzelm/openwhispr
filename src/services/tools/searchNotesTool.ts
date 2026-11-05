@@ -4,7 +4,7 @@ import type { ToolDefinition, ToolResult } from "./ToolRegistry";
 import { resolveLocalNoteId, resolveSpace } from "./utils";
 import { withoutAttendeesFence } from "../../utils/noteAttendees";
 
-const MAX_CONTENT_LENGTH = 500;
+export const MAX_CONTENT_LENGTH = 500;
 
 interface SearchToolOptions {
   useCloudSearch: boolean;
@@ -166,7 +166,11 @@ async function executeCloudSearch(
   const privateSpaceName = spaces.find((s) => s.kind === "private")?.name ?? null;
   const results = await Promise.all(
     cloudNotes.map(async (cn) => ({
-      id: await resolveLocalNoteId(cn.client_note_id),
+      id: await resolveLocalNoteId(
+        cn.client_note_id ?? cn.id,
+        async () =>
+          (await window.electronAPI.getNoteForCloudRow?.(cn.client_note_id, cn.id)) ?? null
+      ),
       title: cn.title && withoutAttendeesFence(cn.title),
       date: cn.created_at,
       type: cn.note_type,
